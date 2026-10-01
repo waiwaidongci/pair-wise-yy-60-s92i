@@ -13,6 +13,7 @@ import {
   Card,
   CardContent,
   Chip,
+  Collapse,
   Divider,
   Drawer,
   IconButton,
@@ -49,6 +50,7 @@ import {
 } from '@mui/icons-material';
 import { fetchEvidence } from '@/lib/api';
 import { useCarbonStore } from '@/lib/store';
+import ReconciliationPanel from './ReconciliationPanel';
 
 const drawerWidth = 232;
 
@@ -61,13 +63,21 @@ export default function EvidenceWorkbench({ initialView }: { initialView: View }
   const [correctionOpen, setCorrectionOpen] = useState(false);
   const [correctionValue, setCorrectionValue] = useState('');
   const [correctionReason, setCorrectionReason] = useState('');
+  const [showClosed, setShowClosed] = useState(false);
   const { data, isLoading } = useQuery({ queryKey: ['carbon-api'], queryFn: fetchEvidence });
   const store = useCarbonStore();
   const selected = store.records.find((record) => record.id === store.selectedRecordId) ?? store.records[0];
   const visibleRecords = useMemo(() => recordFilter === '全部' ? store.records : store.records.filter((record) => record.status === recordFilter), [recordFilter, store.records]);
   const totalReduction = store.records.reduce((total, record) => total + record.activity * record.factor / (record.unit === 'kWh' ? 1000 : record.unit === 'L' ? 1000 : 1), 0);
-  const openFindings = store.findings.filter((item) => item.status !== '已关闭');
-  const allIssuanceChecked = Object.values(store.issuanceChecks).every(Boolean) && openFindings.length === 0;
+  // 完成度只计有效（未失效、未关闭）的发现项与已确认且未失效的签发检查
+  const activeFindings = store.findings.filter((item) => item.status !== '已关闭' && !item.invalidated);
+  const invalidatedFindings = store.findings.filter((item) => item.invalidated && item.status !== '已关闭');
+  const closedFindings = store.findings.filter((item) => item.status === '已关闭');
+  const conflictItems = store.batches.flatMap((batch) => batch.items.filter((item) => item.status === '冲突'));
+  const validCheckedCount = Object.values(store.issuanceChecks).filter((check) => check.checked && !check.stale).length;
+  const staleCheckCount = Object.values(store.issuanceChecks).filter((check) => check.stale).length;
+  const allIssuanceChecked = validCheckedCount === Object.keys(store.issuanceChecks).length && activeFindings.length === 0;
+  const completionPercent = Math.round(validCheckedCount / Object.keys(store.issuanceChecks).length * 70 + (activeFindings.length === 0 ? 30 : 0));
 
   const nav = [
     { id: 'overview', label: '监测期总览', href: '/', icon: DashboardOutlined },
@@ -114,7 +124,7 @@ export default function EvidenceWorkbench({ initialView }: { initialView: View }
             <Typography fontSize={10} color="#a9c5bc">MRV Evidence & Issuance Readiness</Typography>
           </Box>
           <Box sx={{ flex: 1 }} />
-          <Chip size="small" label={`${openFindings.length} 项发现开放`} sx={{ color: '#ffdda7', borderColor: '#a87935', bgcolor: 'rgba(255,255,255,.05)' }} variant="outlined" />
+          <Chip size="small" label={`${activeFindings.length} 项发现开放`} sx={{ color: '#ffdda7', borderColor: '#a87935', bgcolor: 'rgba(255,255,255,.05)' }} variant="outlined" />
           <IconButton color="inherit"><NotificationsNoneOutlined /></IconButton>
           <Avatar sx={{ width: 30, height: 30, bgcolor: '#e1a45d', fontSize: 12 }}>沈</Avatar>
         </Toolbar>
@@ -143,7 +153,7 @@ export default function EvidenceWorkbench({ initialView }: { initialView: View }
                 {[
                   { label: '减排量', value: data?.summary.reduction.toLocaleString() ?? '18,426', unit: 'tCO₂e', note: '较上期 +6.4%' },
                   { label: '证据完整度', value: `${data?.summary.evidenceRate ?? 92}%`, unit: '', note: '5 份证据待补充' },
-                  { label: '开放发现项', value: `${openFindings.length}`, unit: '项', note: '1 项阻塞签发' },
+                  { label: '开放发现项', value: `${activeFindings.length}`, unit: '项', note: invalidatedFindings.length > 0 ? `${invalidatedFindings.length} 项已失效待复核` : '1 项阻塞签发' },
                   { label: '抽样任务', value: `${store.sampledIds.length} / 18`, unit: '', note: '完成率 67%' }
                 ].map((item) => <Card elevation={0} variant="outlined" key={item.label}><CardContent sx={{ p: 1.8, '&:last-child': { pb: 1.8 } }}><Typography variant="caption" color="text.secondary">{item.label}</Typography><Stack direction="row" alignItems="baseline" spacing={.6} mt={.5}><Typography variant="h5" fontWeight={850}>{item.value}</Typography><Typography fontSize={12} color="text.secondary">{item.unit}</Typography></Stack><Typography fontSize={11} color="text.secondary" mt={.7}>{item.note}</Typography></CardContent></Card>)}
               </Box>
@@ -161,7 +171,7 @@ export default function EvidenceWorkbench({ initialView }: { initialView: View }
                       </Box>
                       {visibleRecords.map((record) => (
                         <Box key={record.id} role="button" tabIndex={0} onClick={() => store.selectRecord(record.id)} sx={{ display: 'grid', gridTemplateColumns: '1.7fr .9fr .8fr 1fr .7fr .7fr', gap: 1, px: 1.7, py: 1.25, borderTop: '1px solid #e8ecea', cursor: 'pointer', bgcolor: selected.id === record.id ? '#eff7f3' : 'white', '&:hover': { bgcolor: '#f6faf8' } }}>
-                          <Box><Typography fontSize={12.5} fontWeight={700}>{record.source}</Typography><Typography fontSize={10} color="text.secondary">{record.id} · {record.owner} · V{record.revision}</Typography></Box>
+                          <Box><Typography fontSize={12.5} fontWeight={700}>{record.source}</Typography><Typography fontSize={10} color="text.secondary">{record.id} · 外部 {record.externalId} · V{record.externalVersion} · {record.owner} · 台账 V{record.revision}</Typography></Box>
                           <Box><Typography fontSize={12}>{record.activity.toLocaleString()} {record.unit}</Typography><Typography fontSize={10} color={record.anomaly > 5 ? 'secondary.main' : 'text.secondary'}>异常 {record.anomaly > 0 ? '+' : ''}{record.anomaly}%</Typography></Box>
                           <Typography fontSize={12}>{record.factor} <small>{record.factorUnit}</small></Typography>
                           <Typography fontSize={11}>{record.timeRange}</Typography>
@@ -180,9 +190,10 @@ export default function EvidenceWorkbench({ initialView }: { initialView: View }
                     <Divider sx={{ my: 1 }} />
                     <Box sx={{ color: '#14644f', fontWeight: 800 }}>减排量 = {(selected.activity * selected.factor / 1000).toFixed(2)} tCO₂e</Box>
                   </Box><Stack direction="row" spacing={1} mt={1.5}><Button size="small" variant="outlined" onClick={() => { setCorrectionOpen(true); setCorrectionValue(String(selected.activity)); }}>修订数据</Button><Button size="small">查看证据</Button></Stack></CardContent></Card>
-                  <Card elevation={0} variant="outlined"><CardContent><Typography fontWeight={800} fontSize={14} mb={1.2}>核验发现项</Typography>{openFindings.slice(0, 3).map((finding) => <Box key={finding.id} sx={{ py: 1, borderTop: '1px solid #edf0ef' }}><Stack direction="row" spacing={1}><Alert severity={finding.status === '补证中' ? 'warning' : 'error'} sx={{ p: .2, '& .MuiAlert-icon': { mr: .3, fontSize: 17 } }} /><Box><Typography fontSize={12} fontWeight={700}>{finding.title}</Typography><Typography fontSize={10} color="text.secondary" mt={.3}>{finding.assignee} · {finding.due}</Typography></Box></Stack></Box>)}</CardContent></Card>
+                  <Card elevation={0} variant="outlined"><CardContent><Stack direction="row" justifyContent="space-between" alignItems="center" mb={1.2}><Typography fontWeight={800} fontSize={14}>核验发现项</Typography>{invalidatedFindings.length > 0 && <Chip size="small" label={`${invalidatedFindings.length} 项已失效`} color="warning" variant="outlined" />}</Stack>{activeFindings.slice(0, 3).map((finding) => <Box key={finding.id} sx={{ py: 1, borderTop: '1px solid #edf0ef' }}><Stack direction="row" spacing={1}><Alert severity={finding.status === '补证中' ? 'warning' : 'error'} sx={{ p: .2, '& .MuiAlert-icon': { mr: .3, fontSize: 17 } }} /><Box><Typography fontSize={12} fontWeight={700}>{finding.title}</Typography>{finding.conversionBasis && <Typography fontSize={10} color="text.secondary" mt={.3}>换算依据：{finding.conversionBasis}</Typography>}<Typography fontSize={10} color="text.secondary" mt={.3}>{finding.assignee} · {finding.due}</Typography></Box></Stack></Box>)}{invalidatedFindings.slice(0, 2).map((finding) => <Box key={finding.id} sx={{ py: 1, borderTop: '1px solid #edf0ef', opacity: .72 }}><Stack direction="row" spacing={1} alignItems="center"><Alert severity="warning" sx={{ p: .2, '& .MuiAlert-icon': { mr: .3, fontSize: 17 } }} /><Box><Typography fontSize={12} fontWeight={700}>{finding.title}</Typography><Stack direction="row" spacing={.5} mt={.4} alignItems="center" flexWrap="wrap"><Chip size="small" label={`已失效 · ${finding.invalidationSource ?? ''}`} color="warning" variant="outlined" sx={{ height: 18, fontSize: 10 }} /><Typography fontSize={10} color="text.secondary">{finding.assignee}</Typography></Stack></Box></Stack></Box>)}</CardContent></Card>
                 </Stack>
               </Box>
+              <Box sx={{ mt: 1.5 }}><ReconciliationPanel /></Box>
             </>
           )}
 
@@ -205,7 +216,31 @@ export default function EvidenceWorkbench({ initialView }: { initialView: View }
                 ))}
               </Card>
               <Stack spacing={1.5}>
-                <Card elevation={0} variant="outlined"><CardContent><Typography fontWeight={800} fontSize={14} mb={1.3}>发现项闭环</Typography>{store.findings.map((finding) => <Box key={finding.id} sx={{ borderTop: '1px solid #edf0ef', py: 1.2 }}><Stack direction="row" justifyContent="space-between"><Typography fontSize={12} fontWeight={700}>{finding.title}</Typography><Chip size="small" label={finding.status} color={finding.status === '已关闭' ? 'success' : finding.status === '补证中' ? 'warning' : 'error'} /></Stack><Typography fontSize={10.5} color="text.secondary" mt={.5}>{finding.detail}</Typography><Stack direction="row" spacing={.7} mt={1}><Button size="small" disabled={finding.status === '已关闭'} onClick={() => store.requestEvidence(finding.id)}>发起补证</Button><Button size="small" disabled={finding.status === '已关闭'} onClick={() => store.closeFinding(finding.id)}>关闭</Button></Stack></Box>)}</CardContent></Card>
+                <Card elevation={0} variant="outlined"><CardContent>
+                  <Stack direction="row" justifyContent="space-between" alignItems="center" mb={1.3}><Typography fontWeight={800} fontSize={14}>发现项闭环</Typography><Chip size="small" label={`待复核 ${activeFindings.length + conflictItems.length}`} color="warning" variant="outlined" /></Stack>
+                  {activeFindings.length === 0 && <Typography fontSize={11} color="text.secondary">无待复核发现项。</Typography>}
+                  {activeFindings.map((finding) => <Box key={finding.id} sx={{ borderTop: '1px solid #edf0ef', py: 1.2 }}>
+                    <Stack direction="row" justifyContent="space-between" alignItems="center" gap={1}><Typography fontSize={12} fontWeight={700}>{finding.title}</Typography><Chip size="small" label={finding.status} color={finding.status === '补证中' ? 'warning' : 'error'} /></Stack>
+                    <Typography fontSize={10.5} color="text.secondary" mt={.5}>{finding.detail}</Typography>
+                    {finding.conversionBasis && <Typography fontSize={10.5} color="primary" mt={.4}>换算依据：{finding.conversionBasis}</Typography>}
+                    {finding.sourceRef && <Typography fontSize={10} color="text.secondary" mt={.3}>来源：{finding.sourceType} · {finding.sourceRef}</Typography>}
+                    <Stack direction="row" spacing={.7} mt={1}><Button size="small" onClick={() => store.requestEvidence(finding.id)}>发起补证</Button><Button size="small" onClick={() => store.closeFinding(finding.id)}>关闭</Button></Stack>
+                  </Box>)}
+                  {invalidatedFindings.length > 0 && <Box sx={{ mt: 1.5 }}>
+                    <Typography fontSize={11} fontWeight={750} color="text.secondary" mb={.5}>已失效（依据过期，待复核）</Typography>
+                    {invalidatedFindings.map((finding) => <Box key={finding.id} sx={{ borderTop: '1px solid #edf0ef', py: 1.1, opacity: .78 }}>
+                      <Stack direction="row" justifyContent="space-between" alignItems="center" gap={1}><Typography fontSize={12} fontWeight={700}>{finding.title}</Typography><Chip size="small" label={`已失效 · ${finding.invalidationSource ?? ''}`} color="warning" variant="outlined" /></Stack>
+                      <Typography fontSize={10.5} color="text.secondary" mt={.5}>{finding.detail}</Typography>
+                    </Box>)}
+                  </Box>}
+                  {closedFindings.length > 0 && <Box sx={{ mt: 1.5 }}>
+                    <Button size="small" onClick={() => setShowClosed(!showClosed)} sx={{ p: 0, minWidth: 0 }}>{showClosed ? '收起已关闭' : `查看已关闭（${closedFindings.length}，不计入完成度）`}</Button>
+                    <Collapse in={showClosed}>{closedFindings.map((finding) => <Box key={finding.id} sx={{ borderTop: '1px solid #edf0ef', py: 1.1, opacity: .7 }}>
+                      <Stack direction="row" justifyContent="space-between" alignItems="center" gap={1}><Typography fontSize={12} fontWeight={600}>{finding.title}</Typography><Chip size="small" label="已关闭" color="success" /></Stack>
+                      <Typography fontSize={10.5} color="text.secondary" mt={.5}>{finding.detail}</Typography>
+                    </Box>)}</Collapse>
+                  </Box>}
+                </CardContent></Card>
                 <Alert severity="info">任何数据修订都会生成新版本，原始提交和计算链不会被覆盖。</Alert>
               </Stack>
             </Box>
@@ -222,13 +257,27 @@ export default function EvidenceWorkbench({ initialView }: { initialView: View }
                     { id: 'calculation', title: '计算过程复核通过', detail: '单位和换算系数一致，关键公式由核验员确认。' },
                     { id: 'revisions', title: '历史修订未覆盖原始数据', detail: '所有数据均有版本号和修订原因。' },
                     { id: 'methodology', title: '方法学与监测计划匹配', detail: `项目采用 ${data?.project.methodology ?? 'CMS-052-V01'}。` }
-                  ].map((item) => <Box key={item.id} component="label" sx={{ display: 'flex', gap: 1.3, alignItems: 'flex-start', borderTop: '1px solid #edf0ef', py: 1.5, cursor: 'pointer' }}><input type="checkbox" checked={store.issuanceChecks[item.id]} onChange={() => store.toggleIssuanceCheck(item.id)} /><Box><Typography fontSize={12.5} fontWeight={700}>{item.title}</Typography><Typography fontSize={10.5} color="text.secondary" mt={.4}>{item.detail}</Typography></Box></Box>)}
+                  ].map((item) => {
+                    const check = store.issuanceChecks[item.id];
+                    return (
+                      <Box key={item.id} component="label" sx={{ display: 'flex', gap: 1.3, alignItems: 'flex-start', borderTop: '1px solid #edf0ef', py: 1.5, cursor: 'pointer' }}>
+                        <input type="checkbox" checked={check.checked} onChange={() => store.toggleIssuanceCheck(item.id)} />
+                        <Box>
+                          <Stack direction="row" spacing={.6} alignItems="center" flexWrap="wrap">
+                            <Typography fontSize={12.5} fontWeight={700}>{item.title}</Typography>
+                            {check.stale && <Chip size="small" label="已失效 · 需重算" color="warning" variant="outlined" sx={{ height: 18, fontSize: 10 }} />}
+                          </Stack>
+                          <Typography fontSize={10.5} color="text.secondary" mt={.4}>{item.detail}</Typography>
+                        </Box>
+                      </Box>
+                    );
+                  })}
                 </CardContent>
               </Card>
               <Stack spacing={1.5}>
-                <Card elevation={0} variant="outlined"><CardContent><Typography fontWeight={800} fontSize={14}>签发就绪度</Typography><Stack direction="row" alignItems="baseline" spacing={1} mt={1}><Typography variant="h4" fontWeight={850}>{Math.round(Object.values(store.issuanceChecks).filter(Boolean).length / 4 * 70 + (openFindings.length === 0 ? 30 : 0))}%</Typography><Typography fontSize={11} color="text.secondary">完成度</Typography></Stack><LinearProgress variant="determinate" value={Object.values(store.issuanceChecks).filter(Boolean).length / 4 * 100} sx={{ height: 7, borderRadius: 3, mt: 1 }} /><Typography fontSize={11} color="text.secondary" mt={1.2}>还有 {openFindings.length} 个开放发现项。</Typography></CardContent></Card>
+                <Card elevation={0} variant="outlined"><CardContent><Typography fontWeight={800} fontSize={14}>签发就绪度</Typography><Stack direction="row" alignItems="baseline" spacing={1} mt={1}><Typography variant="h4" fontWeight={850}>{completionPercent}%</Typography><Typography fontSize={11} color="text.secondary">完成度</Typography></Stack><LinearProgress variant="determinate" value={validCheckedCount / Object.keys(store.issuanceChecks).length * 100} sx={{ height: 7, borderRadius: 3, mt: 1 }} /><Typography fontSize={11} color="text.secondary" mt={1.2}>还有 {activeFindings.length} 个待复核发现项{invalidatedFindings.length > 0 ? `，${invalidatedFindings.length} 项已失效` : ''}。</Typography>{staleCheckCount > 0 && <Alert severity="warning" sx={{ mt: 1.2 }}>活动数据已更新，{staleCheckCount} 项签发检查失效需重算。</Alert>}</CardContent></Card>
                 <Card elevation={0} variant="outlined"><CardContent><Stack direction="row" justifyContent="space-between"><Typography fontWeight={800} fontSize={14}>版本与核验意见</Typography><IconButton size="small"><MoreHorizOutlined /></IconButton></Stack>{[['V4', '韩跃', '修订柴油活动数据并补充测试运行说明'], ['V3', '沈楠', '要求补充流量计校准证据'], ['V2', '徐璐', '统一电量单位并附原始记录']].map((item) => <Stack key={item[0]} direction="row" spacing={1.2} sx={{ borderTop: '1px solid #edf0ef', py: 1.2 }}><Chip size="small" label={item[0]} /><Box><Typography fontSize={11.5} fontWeight={700}>{item[1]}</Typography><Typography fontSize={10.5} color="text.secondary">{item[2]}</Typography></Box></Stack>)}</CardContent></Card>
-                <Alert severity={allIssuanceChecked ? 'success' : 'warning'}>{allIssuanceChecked ? '全部门禁已完成，可提交签发准备。' : '关闭开放发现项并完成所有检查后可提交。'}</Alert>
+                <Alert severity={allIssuanceChecked ? 'success' : 'warning'}>{allIssuanceChecked ? '全部门禁已完成，可提交签发准备。' : staleCheckCount > 0 ? '活动数据已更新，签发检查需重算；完成待复核项后可提交。' : '关闭待复核发现项并完成所有检查后可提交。'}</Alert>
               </Stack>
             </Box>
           )}
