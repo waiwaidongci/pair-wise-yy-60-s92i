@@ -12,3 +12,19 @@ export async function submitEvidenceCorrection(payload: { recordId: string; valu
   const response = await client.post('/api/evidence', { json: payload }).json<{ accepted: boolean; revision: number; recordedAt: string }>();
   return response;
 }
+
+export async function writeReconItem(payload: {
+  idempotencyKey: string;
+  batchNo: string;
+  externalId: string;
+  externalVersion: number;
+  activity: number;
+  unit: string;
+}) {
+  const response = await client.post('/api/reconcile', {
+    json: payload,
+    retry: { limit: 0 },
+    timeout: 8_000
+  }).json<{ accepted: boolean; idempotent?: boolean; recordedAt?: string; error?: string }>();
+  return response;
+}
